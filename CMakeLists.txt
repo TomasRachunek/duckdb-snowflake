@@ -5,6 +5,7 @@ set(TARGET_NAME snowflake)
 project(${TARGET_NAME})
 include_directories(src/include)
 include_directories(third_party)
+include(CTest)
 
 # Configure build system for MinGW Windows builds
 # Force Ninja generator for MinGW builds to fix OpenSSL build issues
@@ -69,6 +70,12 @@ endif()
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 set_property(TARGET ${LOADABLE_EXTENSION_NAME} PROPERTY "EXTENSION_VERSION_SCRIPT" "TRUE")
+
+if(BUILD_TESTING)
+    add_executable(snowflake_query_builder_identifier_test test/cpp/snowflake_query_builder_identifier_test.cpp)
+    target_link_libraries(snowflake_query_builder_identifier_test PRIVATE ${EXTENSION_NAME} duckdb_static)
+    add_test(NAME snowflake_query_builder_identifier_test COMMAND snowflake_query_builder_identifier_test)
+endif()
 
 # Link dependencies in both the static library and the loadable extension
 # OpenSSL is not needed - the ADBC driver handles all SSL/TLS communication
