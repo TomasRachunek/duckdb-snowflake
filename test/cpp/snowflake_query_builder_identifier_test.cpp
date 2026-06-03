@@ -50,6 +50,7 @@ int main() {
 		const auto filtered_sql =
 		    SnowflakeQueryBuilder::BuildQuery("DATABASE.SCHEMA.ORDERS", {}, &filter_set, {"customerId"});
 		AssertContains(filtered_sql, "\"customerId\"", "filter quoting lowercase");
+		AssertContains(filtered_sql, "\"customerId\" = 42", "filter quoting predicate");
 		AssertContains(filtered_sql, "= 42", "filter equality");
 	} catch (const std::exception &ex) {
 		std::cerr << ex.what() << std::endl;
