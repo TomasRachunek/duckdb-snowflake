@@ -6,6 +6,9 @@
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 
+#include <unordered_map>
+#include <utility>
+
 namespace duckdb {
 namespace snowflake {
 
@@ -46,14 +49,21 @@ private:
 	//! Build WHERE clause expression from DuckDB filters
 	//! Returns nullptr if no filters
 	static unique_ptr<ParsedExpression> BuildWhereExpression(TableFilterSet *filter_set,
-	                                                         const vector<string> &column_names);
+	                                                         const vector<string> &column_names,
+	                                                         std::unordered_map<string, string> &identifier_placeholders,
+	                                                         vector<std::pair<string, string>> &identifier_replacements);
 
 	//! Transform a single DuckDB TableFilter to ParsedExpression
-	static unique_ptr<ParsedExpression> TransformFilter(const TableFilter &filter, const string &column_name);
+	static unique_ptr<ParsedExpression> TransformFilter(const TableFilter &filter, const string &column_name,
+	                                                    std::unordered_map<string, string> &identifier_placeholders,
+	                                                    vector<std::pair<string, string>> &identifier_replacements);
 
 	//! Build projection list (SELECT clause expressions)
 	//! Returns empty vector for SELECT *
-	static vector<unique_ptr<ParsedExpression>> BuildProjectionList(const vector<string> &projection_columns);
+	static vector<unique_ptr<ParsedExpression>>
+	BuildProjectionList(const vector<string> &projection_columns,
+	                    std::unordered_map<string, string> &identifier_placeholders,
+	                    vector<std::pair<string, string>> &identifier_replacements);
 };
 
 //! Quote a Snowflake identifier when its characters or case would otherwise

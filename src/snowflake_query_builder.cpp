@@ -18,6 +18,19 @@
 namespace duckdb {
 namespace snowflake {
 
+static string GetOrCreateIdentifierPlaceholder(const string &identifier,
+                                               std::unordered_map<string, string> &identifier_placeholders,
+                                               vector<std::pair<string, string>> &identifier_replacements) {
+	auto entry = identifier_placeholders.find(identifier);
+	if (entry != identifier_placeholders.end()) {
+		return entry->second;
+	}
+	const string placeholder = "__SNOWFLAKE_IDENTIFIER_" + std::to_string(identifier_placeholders.size()) + "__";
+	identifier_placeholders.emplace(identifier, placeholder);
+	identifier_replacements.emplace_back(placeholder, QuoteSnowflakeIdentifier(identifier));
+	return placeholder;
+}
+
 string QuoteSnowflakeIdentifier(const string &name) {
 	if (name.empty()) {
 		return name;
@@ -124,6 +137,8 @@ string SnowflakeQueryBuilder::BuildQuery(const string &table_name, const vector<
 	// Create a SelectStatement AST
 	auto select_stmt = make_uniq<SelectStatement>();
 	auto select_node = make_uniq<SelectNode>();
+	std::unordered_map<string, string> identifier_placeholders;
+	vector<std::pair<string, string>> identifier_replacements;
 
 	// 1. Build a placeholder FROM clause; we substitute the SF-quoted form
 	//    after AST serialization. The placeholder is all-uppercase / underscores
@@ -134,14 +149,16 @@ string SnowflakeQueryBuilder::BuildQuery(const string &table_name, const vector<
 	select_node->from_table = std::move(table_ref);
 
 	// 2. Build the SELECT clause (projection list)
-	auto projection_list = BuildProjectionList(projection_columns);
+	auto projection_list =
+	    BuildProjectionList(projection_columns, identifier_placeholders, identifier_replacements);
 	if (!projection_list.empty()) {
 		select_node->select_list = std::move(projection_list);
 	}
 	// If empty, SelectNode defaults to SELECT *
 
 	// 3. Build the WHERE clause (filters)
-	auto where_expr = BuildWhereExpression(filter_set, column_names);
+	auto where_expr =
+	    BuildWhereExpression(filter_set, column_names, identifier_placeholders, identifier_replacements);
 	if (where_expr) {
 		select_node->where_clause = std::move(where_expr);
 	}
@@ -153,11 +170,16 @@ string SnowflakeQueryBuilder::BuildQuery(const string &table_name, const vector<
 	string sql = select_stmt->ToString();
 	const string sf_from = RequoteDottedIdentifier(table_name);
 	sql = StringUtil::Replace(sql, from_placeholder, sf_from);
+	for (const auto &identifier_replacement : identifier_replacements) {
+		sql = StringUtil::Replace(sql, identifier_replacement.first, identifier_replacement.second);
+	}
 	return sql;
 }
 
 unique_ptr<ParsedExpression> SnowflakeQueryBuilder::BuildWhereExpression(TableFilterSet *filter_set,
-                                                                         const vector<string> &column_names) {
+                                                                         const vector<string> &column_names,
+                                                                         std::unordered_map<string, string> &identifier_placeholders,
+                                                                         vector<std::pair<string, string>> &identifier_replacements) {
 	if (!filter_set || filter_set->filters.empty()) {
 		return nullptr;
 	}
@@ -175,7 +197,8 @@ unique_ptr<ParsedExpression> SnowflakeQueryBuilder::BuildWhereExpression(TableFi
 		}
 
 		string column_name = column_names[column_idx];
-		auto condition = TransformFilter(*filter, column_name);
+		auto condition =
+		    TransformFilter(*filter, column_name, identifier_placeholders, identifier_replacements);
 		// Note: TransformFilter returns nullptr for filters that should be skipped
 		// (e.g., uninitialized DYNAMIC_FILTER) These filters will be applied by
 		// DuckDB locally after fetching data
@@ -201,9 +224,12 @@ unique_ptr<ParsedExpression> SnowflakeQueryBuilder::BuildWhereExpression(TableFi
 }
 
 unique_ptr<ParsedExpression> SnowflakeQueryBuilder::TransformFilter(const TableFilter &filter,
-                                                                    const string &column_name) {
+                                                                    const string &column_name,
+                                                                    std::unordered_map<string, string> &identifier_placeholders,
+                                                                    vector<std::pair<string, string>> &identifier_replacements) {
 	// Create column reference
-	auto column_ref = make_uniq<ColumnRefExpression>(column_name);
+	auto column_ref = make_uniq<ColumnRefExpression>(
+	    GetOrCreateIdentifierPlaceholder(column_name, identifier_placeholders, identifier_replacements));
 
 	switch (filter.filter_type) {
 	case TableFilterType::CONSTANT_COMPARISON: {
@@ -255,7 +281,8 @@ unique_ptr<ParsedExpression> SnowflakeQueryBuilder::TransformFilter(const TableF
 		// Push whatever we can, let DuckDB handle the rest
 		vector<unique_ptr<ParsedExpression>> conditions;
 		for (const auto &child : conj_filter.child_filters) {
-			auto condition = TransformFilter(*child, column_name);
+			auto condition =
+			    TransformFilter(*child, column_name, identifier_placeholders, identifier_replacements);
 			if (condition) {
 				// This filter can be pushed
 				conditions.push_back(std::move(condition));
@@ -294,7 +321,8 @@ unique_ptr<ParsedExpression> SnowflakeQueryBuilder::TransformFilter(const TableF
 		if (!opt_filter.child_filter) {
 			throw InternalException("OPTIONAL_FILTER has no child filter for column '%s'", column_name.c_str());
 		}
-		auto result = TransformFilter(*opt_filter.child_filter, column_name);
+		auto result =
+		    TransformFilter(*opt_filter.child_filter, column_name, identifier_placeholders, identifier_replacements);
 		// Optional filters can return nullptr (e.g., uninitialized DYNAMIC_FILTER)
 		// This is acceptable - DuckDB will apply the filter locally if needed
 		return result;
@@ -311,7 +339,8 @@ unique_ptr<ParsedExpression> SnowflakeQueryBuilder::TransformFilter(const TableF
 		// Build as: (column = val1) OR (column = val2) OR ...
 		vector<unique_ptr<ParsedExpression>> conditions;
 		for (const auto &value : in_filter.values) {
-			auto col_ref = make_uniq<ColumnRefExpression>(column_name);
+			auto col_ref = make_uniq<ColumnRefExpression>(
+			    GetOrCreateIdentifierPlaceholder(column_name, identifier_placeholders, identifier_replacements));
 			auto constant = make_uniq<ConstantExpression>(value);
 			auto comparison =
 			    make_uniq<ComparisonExpression>(ExpressionType::COMPARE_EQUAL, std::move(col_ref), std::move(constant));
@@ -340,7 +369,8 @@ unique_ptr<ParsedExpression> SnowflakeQueryBuilder::TransformFilter(const TableF
 		// So we only push if ALL filters in the OR can be pushed
 		vector<unique_ptr<ParsedExpression>> conditions;
 		for (const auto &child : conj_filter.child_filters) {
-			auto condition = TransformFilter(*child, column_name);
+			auto condition =
+			    TransformFilter(*child, column_name, identifier_placeholders, identifier_replacements);
 			if (!condition) {
 				// For OR, if any child can't be pushed, we skip the entire OR
 				// This preserves correctness - partial OR pushdown could change
@@ -379,7 +409,8 @@ unique_ptr<ParsedExpression> SnowflakeQueryBuilder::TransformFilter(const TableF
 			DPRINT("DYNAMIC_FILTER initialized for column '%s', unwrapping to "
 			       "ConstantFilter\n",
 			       column_name.c_str());
-			return TransformFilter(*dyn_filter.filter_data->filter, column_name);
+			return TransformFilter(*dyn_filter.filter_data->filter, column_name, identifier_placeholders,
+			                       identifier_replacements);
 		}
 
 		// If not initialized yet, skip this filter - DuckDB will apply it locally
@@ -404,7 +435,9 @@ unique_ptr<ParsedExpression> SnowflakeQueryBuilder::TransformFilter(const TableF
 }
 
 vector<unique_ptr<ParsedExpression>>
-SnowflakeQueryBuilder::BuildProjectionList(const vector<string> &projection_columns) {
+SnowflakeQueryBuilder::BuildProjectionList(const vector<string> &projection_columns,
+                                          std::unordered_map<string, string> &identifier_placeholders,
+                                          vector<std::pair<string, string>> &identifier_replacements) {
 	vector<unique_ptr<ParsedExpression>> result;
 
 	if (projection_columns.empty()) {
@@ -414,7 +447,8 @@ SnowflakeQueryBuilder::BuildProjectionList(const vector<string> &projection_colu
 
 	// Create ColumnRefExpression for each projected column
 	for (const auto &col : projection_columns) {
-		result.push_back(make_uniq<ColumnRefExpression>(col));
+		result.push_back(make_uniq<ColumnRefExpression>(
+		    GetOrCreateIdentifierPlaceholder(col, identifier_placeholders, identifier_replacements)));
 	}
 
 	return result;
