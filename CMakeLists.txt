@@ -73,8 +73,8 @@ set_property(TARGET ${LOADABLE_EXTENSION_NAME} PROPERTY "EXTENSION_VERSION_SCRIP
 
 if(BUILD_TESTING)
     add_executable(snowflake_query_builder_identifier_test test/cpp/snowflake_query_builder_identifier_test.cpp)
-    target_link_libraries(snowflake_query_builder_identifier_test PRIVATE ${EXTENSION_NAME} duckdb_static)
-    add_test(NAME snowflake_query_builder_identifier_test COMMAND snowflake_query_builder_identifier_test)
+    target_link_libraries(snowflake_query_builder_identifier_test PRIVATE ${EXTENSION_NAME} duckdb_static
+                                                                          duckdb_generated_extension_loader)
 endif()
 
 # Link dependencies in both the static library and the loadable extension
