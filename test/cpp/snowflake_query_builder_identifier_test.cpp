@@ -7,8 +7,6 @@
 #include "duckdb/planner/table_filter.hpp"
 
 #include <iostream>
-#include <memory>
-
 namespace duckdb {
 namespace snowflake {
 
@@ -46,7 +44,8 @@ int main() {
 
 		TableFilterSet filter_set;
 		filter_set.PushFilter(ColumnIndex(0),
-		                      std::make_unique<ConstantFilter>(ExpressionType::COMPARE_EQUAL, Value::INTEGER(42)));
+		                      unique_ptr<TableFilter>(new ConstantFilter(ExpressionType::COMPARE_EQUAL,
+		                                                                 Value::INTEGER(42))));
 
 		const auto filtered_sql =
 		    SnowflakeQueryBuilder::BuildQuery("DATABASE.SCHEMA.ORDERS", {}, &filter_set, {"customerId"});
